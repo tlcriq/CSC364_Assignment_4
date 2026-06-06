@@ -23,12 +23,11 @@ while(True):
 
     (next_port,) = struct.unpack('>I', packet[:PORT_SIZE])
     (next_ip,) = struct.unpack('32s', packet[PORT_SIZE:BUFFER_SIZE])
-    print(next_ip, next_port)
+    print("Connected:", next_ip.decode().rstrip('\x00'), next_port)
     
     bit_table = packet
     for add in addresses:
         bit_table += add
-    print(bit_table)
     connection.send(bit_table)
     addresses.append(packet)
 
