@@ -132,7 +132,6 @@ def recieve_files(connection : socket.socket, peerID : bytes, this_direct):
             # Send request or ignore if you have the file
             f = offer[1+PEER_ID_SIZE:]
             filename = f.rstrip('\x00')
-            print("File:",filename)
             if filename in files:
                 connection.send(b'I'+filename.encode())
                 continue
@@ -147,12 +146,10 @@ def recieve_files(connection : socket.socket, peerID : bytes, this_direct):
                 elif transfer[0]=='T':
                     chunk = transfer[1:]
                     files[filename] = files[filename] + chunk
-                    print(chunk)
                     connection.send(b'A'+peerID)
                 else:
                     print("Unexpected request instead of transfer:",transfer[0],transfer[1:])
             
-            print("File recieved", filename)
             # Write to new file
             path = os.path.join(this_direct, filename)
             with open(path, 'w', encoding='utf-8') as f:
