@@ -58,13 +58,15 @@ def stringID(peerID : bytes):
     (next_port,) = struct.unpack('>I', peerID[:PORT_SIZE])
     (ip,) = struct.unpack('32s', peerID[PORT_SIZE:PEER_ID_SIZE])
     ip = ip.decode().rstrip()
-    return ip+", "+str(next_port)
+    return f"({ip}, {str(next_port)})"
 
 
 # Thread for offering and sending files to a single peer
 # Fortunately TCP should handle retransmissions of lost chunks
 def offer_files(connection : socket.socket, files : dict[str,str], peerID : bytes, targetID : bytes):
     print("Offer to peer", stringID(targetID))
+    if not files:
+        connection.send(b'O' + peerID + struct.pack('32s', b''))
     for file in files:
         # Send offer
         offer : bytes = b'O' + peerID
@@ -100,7 +102,6 @@ def offer_files(connection : socket.socket, files : dict[str,str], peerID : byte
                 ack = connection.recv(1+PEER_ID_SIZE).decode()
                 if ack[0] == 'A' and ack[1:]==targetID.decode():
                     connection.send(b'E' + struct.pack(CHUNK_FORMAT, text.encode()))
-                    print("File sent")
                 else:
                     print(f"Unexpected ack from peer {stringID(targetID)}: {ack.encode()}")
             else:
@@ -109,7 +110,7 @@ def offer_files(connection : socket.socket, files : dict[str,str], peerID : byte
             print("Offer rejected")
             continue
     connection.send(b'F' + peerID)
-    print("Finished sending to peer", stringID(targetID))
+    print("Finished sending to peer", stringID(targetID),"\n")
 
 
 # Server part of peer
@@ -122,20 +123,20 @@ def recieve_files(connection : socket.socket, peerID : bytes, this_direct):
         offer = connection.recv(1+PEER_ID_SIZE+F_NAME_SIZE)
         senderID = offer[1:1+PEER_ID_SIZE]
         offer = offer.decode()
-        if offer[0]=='F':
-            print("Finished recieving files from peer",stringID(senderID))
+        if offer[0]=='F' or offer[1+PEER_ID_SIZE:].rstrip('\x00')=="":
+            print("Finished recieving files from peer",stringID(senderID),"\n")
             ended = True
             break
         
         elif offer[0]=='O':
             # Send request or ignore if you have the file
-            filename = offer[1+PEER_ID_SIZE:]
+            f = offer[1+PEER_ID_SIZE:]
+            filename = f.rstrip('\x00')
             print("File:",filename)
-            if files.__contains__(filename):
+            if filename in files:
                 connection.send(b'I'+filename.encode())
                 continue
-            connection.send(b'R'+filename.encode())
-            filename = filename.rstrip('\x00')
+            connection.send(b'R'+f.encode())
             files[filename] = ""
             while True:
                 transfer = connection.recv(1+MAX_CHUNK_SIZE).decode()
@@ -146,8 +147,8 @@ def recieve_files(connection : socket.socket, peerID : bytes, this_direct):
                 elif transfer[0]=='T':
                     chunk = transfer[1:]
                     files[filename] = files[filename] + chunk
-                    connection.send(b'A'+peerID)
                     print(chunk)
+                    connection.send(b'A'+peerID)
                 else:
                     print("Unexpected request instead of transfer:",transfer[0],transfer[1:])
             
@@ -158,12 +159,10 @@ def recieve_files(connection : socket.socket, peerID : bytes, this_direct):
                 f.write(files[filename])
 
         else:
-            print(f"Unexpected message of type {offer[0]} from {stringID(senderID)}")
+            print(f"Unexpected message (non-offer) of type {offer[0]} from {senderID}")
     
-
-
-# Offer to the peers the server told us about
-for targetID in peerIDs:
+# 
+def connect_to_peer(targetID : bytes) -> socket.socket:
     (next_port,) = struct.unpack('>I', targetID[:PORT_SIZE])
     (next_ip,) = struct.unpack('32s', targetID[PORT_SIZE:PEER_ID_SIZE])
     next_ip = next_ip.decode().rstrip("\x00")
@@ -174,6 +173,11 @@ for targetID in peerIDs:
     except:
         print("Connection Error to", (next_ip, next_port))
         sys.exit()
+    return peer_soc
+
+# Offer to the peers the server told us about
+for targetID in peerIDs:
+    peer_soc = connect_to_peer(targetID)
 
     try:
         thd = Thread(target=offer_files, args=(peer_soc, files.copy(), peerID, targetID))
@@ -184,32 +188,29 @@ for targetID in peerIDs:
 
 
 # While loop
-# If you recieve an offer, thread to accept or reject. If 
+# If you recieve an offer, thread to accept or reject. If the peer is new, add it and send it an offer
 while True:
     conn, addr = soc.accept()
     msg = conn.recv(1, socket.MSG_PEEK)
     msg_type = msg.decode()[0]
     if msg_type=='O':
+        newID = conn.recv(1+PEER_ID_SIZE, socket.MSG_PEEK)[1:]
         try:
             thd = Thread(target=recieve_files, args=(conn, peerID, this_direct))
             thd.start()
         except:
             print("Thread did not start.")
             sys.exit()
-        
+
+        if not newID in  peerIDs:
+            peerIDs.append(newID)
+            new_soc = connect_to_peer(newID)
+            print("adding peer", newID)
+            try:
+                thd = Thread(target=offer_files, args=(new_soc, files.copy(), peerID, newID))
+                thd.start()
+            except:
+                print("Thread did not start.")
+                sys.exit()
     else:
         print("Unexpected message type:", msg_type)
-
-'''
-exMessage = "Hello world"
-byteMessage = str.encode(exMessage)
-buffer_size = 5120
-
-soc = socket.socket(family=socket.AF_INET, type=socket.SOCK_DGRAM)
-
-
-soc.sendto(byteMessage, server_address)
-
-response = soc.recvfrom(buffer_size)
-pr = "Response: {}".format(response[0])
-print(pr)'''
